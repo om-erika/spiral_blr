@@ -4,6 +4,18 @@ from numpy import sqrt, log10, log, radians, exp, sin, tan, linspace, pi, array,
 import numpy as np
 import math
 
+c = 3e5 #velocità della luce in km/s
+lambda_emessa = 6563 #lunghezza d'onda emessa in angstrom
+inc = np.radians(30.) #inclinazione del disco
+period = 120. #periodo luminosità in giorni
+x_c = 1200. #raggio centrale del disco in unità di raggi gravitazionali
+A = 50. #contrasto emissività gaussiana-spirale
+p = np.radians(30.) #quanto gira la spirale su se stessa
+d = 0.5 #larghezza della spirale
+xi_sp = 0.1 #raggio iniziale della spirale
+phi_0 = 0. #offset angolare della spirale
+sigma = lambda_emessa*1200.0/c #deviazione standard della gaussiana
+
 
 # AREA KERNEL
 # da 3 vettori cuda per raggi, angoli e lunghezze d'onda, calcola il valore dell'area della singola sezione
@@ -14,7 +26,7 @@ def area_kernel(x, fi, d_lam, d_area):
     idx_lambda, idx_x, idx_fi = cuda.grid(3)
 
     dr = x[1]- x[0]
-    if idx_lambda < d_lam.size and idx_x < xi.size and idx_fi < fi.size:
+    if idx_lambda < d_lam.size and idx_x < x.size and idx_fi < fi.size:
         d_area[idx_lambda][idx_x][idx_fi] = math.pi/fi.size*((x[idx_x]+dr)**2 - x[idx_x]**2)
 
 
@@ -39,8 +51,8 @@ def emissivity_kernel(x, fi, d_lam, d_emissivity):
         r_c = r_c_kernel(x[idx_x], fi[idx_fi], 1.)
         sigma_centrata = r_c/2
         first = 1/x[idx_x]*1/(math.sqrt(2*math.pi)*sigma_centrata)*math.exp(-(x[idx_x]-r_c)**2/(2*sigma_centrata**2))
-        second = A/2*math.exp(-4*math.log(2)/d**2 *(phi[idx_fi]-phi_0 - math.log10(x[idx_x]/xi_sp)/math.tan(p) - 2*math.pi*math.floor((phi[idx_fi]-phi_0 - math.log10(x[idx_x]/xi_sp)/math.tan(p))/(2*math.pi)))**2)
-        third = A/2*math.exp(-4*math.log(2)/d**2 *(2*math.pi- phi[idx_fi] + phi_0 + math.log10(x[idx_x]/xi_sp)/np.tan(p) + 2*math.pi*math.floor((phi[idx_fi]-phi_0 - math.log10(x[idx_x]/xi_sp)/math.tan(p) )/(2*math.pi)))**2)
+        second = A/2*math.exp(-4*math.log(2)/d**2 *(fi[idx_fi]-phi_0 - math.log10(x[idx_x]/xi_sp)/math.tan(p) - 2*math.pi*math.floor((fi[idx_fi]-phi_0 - math.log10(x[idx_x]/xi_sp)/math.tan(p))/(2*math.pi)))**2)
+        third = A/2*math.exp(-4*math.log(2)/d**2 *(2*math.pi- fi[idx_fi] + phi_0 + math.log10(x[idx_x]/xi_sp)/np.tan(p) + 2*math.pi*math.floor((fi[idx_fi]-phi_0 - math.log10(x[idx_x]/xi_sp)/math.tan(p) )/(2*math.pi)))**2)
         d_emissivity[idx_lambda][idx_x][idx_fi] = first*(1+second+third)
 
 #LUMINOSITY KERNEL

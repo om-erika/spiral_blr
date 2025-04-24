@@ -95,26 +95,3 @@ def sum_kernel(x, fi, d_lam, d_flux, d_flux_def):
         for i_x in range(x.size):
             for i_fi in range(fi.size):
                 d_flux_def[idx_lambda] = d_flux_def[idx_lambda] + d_flux[idx_lambda][i_x][i_fi]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

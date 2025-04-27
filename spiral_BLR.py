@@ -55,7 +55,7 @@ def emissivity_kernel(x, fi, d_lam, d_emissivity):
         third = A/2*math.exp(-4*math.log(2)/d**2 *(2*math.pi- fi[idx_fi] + phi_0 + math.log10(x[idx_x]/xi_sp)/np.tan(p) + 2*math.pi*math.floor((fi[idx_fi]-phi_0 - math.log10(x[idx_x]/xi_sp)/math.tan(p) )/(2*math.pi)))**2)
         d_emissivity[idx_lambda][idx_x][idx_fi] = first*(1+second+third)
 
-#LUMINOSITY KERNEL
+#LUMINOSITY KERNEL: need to be substituted with the accretion_disk.py results
 @cuda.jit
 def luminosity_kernel(x, fi, d_lam, t, d_luminosity):
     idx_lambda, idx_x, idx_fi = cuda.grid(3)

@@ -17,28 +17,8 @@ M_sun = 2e30  # Solar mass (kg)
 M = 2e30*1e8  # Mass of the black hole (kg)
 chi = 0.1  # Dimensionless spin parameter
 
-
-@cuda.jit(device=True)
-def R_ISCO(M, chi):
-    Z1 = 1 + (1 - chi**2)**(1/3) * ((1 + chi)**(1/3) + (1 - chi)**(1/3))
-    Z2 = np.sqrt(3 * chi**2 + Z1**2)
-    isco_ = 3 + Z2 - np.sign(chi) * np.sqrt((3 - Z1) * (3 + Z1 + 2 * Z2))
-    return isco_ * G * M / c**2
-
-# Function to calculate the Eddington luminosity 
-# Can only run it inside a GPU kernel
-def L_edd(M):
-    return 4 * np.pi * G * M * c / 0.1
-
-# Function to calculate the temperature profile of an accretion disk
-# Can only run it inside a GPU kernel
-def Temperature(R, M, f_edd, chi, R_in):
-    eta = radiative_efficiency(chi)
-    M_dot = f_edd * L_edd(M) / (eta * c**2)  # Mass accretion rate
-    return ((3 * G * M * M_dot) / (8 * np.pi * sigma_B * R**3))**(1/4) * (1 - np.sqrt(R_in / R))**(1/4)
-
 # Function to calculate the radiative efficiency of a black hole
-# Can only run it inside a GPU kernel
+# Returns 1 adimensionless value
 @cuda.jit(device = True)
 def radiative_efficiency(chi):
     Z1 = 1 + (1 - chi**2)**(1/3) * ((1 + chi)**(1/3) + (1 - chi)**(1/3))
@@ -48,22 +28,22 @@ def radiative_efficiency(chi):
     return eta
 
 # Function to calculate the temperature profile of an accretion disk
-# Can only run inside a GPU kernel
-@cuda.jit(device = True)
+# Returns CUDA device array of temperatures for the given radii
+@cuda.jit(device=True)
 def Temperature(R, M, f_edd, chi, R_in):
     eta = radiative_efficiency(chi)
     M_dot = f_edd * L_edd(M) / (eta * c**2)  # Mass accretion rate
     return ((3 * G * M * M_dot) / (8 * np.pi * sigma_B * R**3))**(1/4) * (1 - np.sqrt(R_in / R))**(1/4)
 
 # Function to calculate the Planck spectrum for a given temperature
-# Can only run in Cuda kernel
+# Returns spectrum value for the given frequency and temperature
 @cuda.jit(device = True)
 def planck_spectrum(nu, T):
     return (2 * h * nu**3) / (c**2) * (1 / (np.exp(h * nu / (k * T)) - 1))
 
 # Function to calculate the ionizing flux for a given temperature
 # The temperature here should be D*T/(1+z) where D is the Doppler factor, 1+z is the gravitational redshift and T is the rest frame wavelength 
-# Can only run in Cuda kernel
+# Returns the ionizing flux for the given radius and dtheta (with dependence on T, D also)
 @cuda.jit(device = True)
 def ionizing_flux_element(T,D,R,dr,dtheta):
     def integrand(nu):
@@ -72,7 +52,7 @@ def ionizing_flux_element(T,D,R,dr,dtheta):
     return flux*R*dr*dtheta
 
 # Function to calculate the Doppler factor for relativistic motion
-# Can only run in Cuda kernel
+# Returns the Doppler factor for the given angles and positions
 @cuda.jit(device = True)
 def Doppler_factor(v1, v2, r1, r2):
     """
@@ -97,19 +77,11 @@ def Doppler_factor(v1, v2, r1, r2):
     return D
 
 # Function to calculate the Keplerian frequency at a given radius
-# Can only run in Cuda kernel
+# Returns the Keplerian frequency for the given radius (no theta dependence)
 @cuda.jit(device = True)
 def keplerian_freq(M, R):
     omega_k = np.sqrt(G * M / R**3)
     return omega_k
-
-# Function to de-evolve the phase of an orbiting object
-# Find where the emitting element of the accretion disc was at an arbitrary time
-# Can only run in Cuda kernel
-@cuda.jit(device = True)
-def de_evolve(theta, time_delay, initial_phase, M, R):
-    theta_prime = theta - (time_delay * keplerian_freq(M, R) + initial_phase)
-    return theta_prime
 
 @cuda.jit(device = True)
 def gravitational_redshift(M,R):
@@ -123,7 +95,7 @@ def gravitational_redshift(M,R):
 def velocity_components(angle, R, M, corot=0):
     v_kep = np.sqrt(G * M / R)  # Keplerian velocity
     vx = v_kep * np.cos(angle)  # x-component of velocity
-    vy = -v_kep * np.sin(angle)  # y-component of velocity
+    vy = -v_kep * np.sin(angle) # y-component of velocity
 
     if corot == 0:  # Corotating case
         return np.array([vx, vy])
@@ -183,3 +155,99 @@ def generate_set_of_temperatures(times, Rs, thetas, M, f_edd, chi, R_in, tau, si
             starting_ys[i][j] = gp.sample()  # Sample initial temperatures
             gps[i][j] = gp  # Store the GP object
     return gps, 10**starting_ys
+
+
+"""-----------------------------------------------------------------------------------"""
+# Function to de-evolve the phase of an orbiting object
+# Find where the emitting element of the accretion disc was at an arbitrary time
+# Modifies a pre-allocated CUDA device array (filled with zeros) with the de-evolved angles
+@cuda.jit
+def de_evolve(xi, theta, times, time_delay, initial_phase, M, d_thetaprimes):
+    idx_xi, idx_theta, idx_t = cuda.grid(3)
+
+    if idx_xi < xi.size and idx_theta < theta.size and idx_t < times.size:
+        d_thetaprimes[idx_xi][idx_theta][idx_t] =  ((theta[idx_theta] - (times[idx_t] -time_delay[idx_xi][idx_theta])*keplerian_freq(xi[idx_xi], M) + initial_phase)) % (2*np.pi)
+
+#Function to compute time delay
+# Modifies a pre-allocated CUDA device array (filled with zeros) with the de-evolved angles
+# @cuda.jit(device=True) would be more efficient if we don't need to save them in a device array
+@cuda.jit
+def compute_time_delay(xi, theta, inc, d_td):
+    idx_xi, idx_theta = cuda.grid(2)
+    if idx_xi < xi.size and idx_theta < theta.size:    
+        d_td[idx_xi][idx_theta] = xi[idx_xi]*(1+math.sin(inc)*math.cos(theta[idx_theta]))
+
+#
+@cuda.jit(device = True)
+def position_components(angle, R):
+    x = R * math.sin(angle)  # x-coordinate
+    y = R * math.cos(angle)  # y-coordinate
+    return x,y
+
+#vx, vy are separated cuda device
+@cuda.jit(device = True)
+def velocity_components(angle, R, M, corot=0):
+    v_kep = math.sqrt(G * M / R)  # Keplerian velocity
+    vx = v_kep * math.cos(angle)  # x-component of velocity
+    vy = -v_kep * math.sin(angle) # y-component of velocity
+
+    if corot == 0:  # Corotating case
+        return vx, vy
+    else:  # Non-corotating case
+        return -vx, -vy
+    
+# Function to calculate the Doppler factor for relativistic motion
+# Returns the Doppler factor for the given angles and positions
+@cuda.jit(device = True)
+def Doppler_factor(v1, v2, r1, r2):
+    """
+    Calculate the Doppler factor for a moving source and observer.
+    Parameters:
+    v1 (numpy.ndarray): Velocity vector of the observer (in units of m/s).
+    v2 (numpy.ndarray): Velocity vector of the source (in units of m/s).
+    r1 (numpy.ndarray): Position vector of the observer (in units of m).
+    r2 (numpy.ndarray): Position vector of the source (in units of m).
+    Returns:
+    float: The Doppler factor, which accounts for the relativistic effects 
+           of motion on the observed frequency of a signal.
+    """
+
+    v2_para = np.dot(v2, v1) * v1 / np.linalg.norm(v1)**2  # Parallel component of v2 
+    v2_perp = v2 - v2_para  # Perpendicular component of v2
+    gamma_2 = 1 / np.sqrt(1 - np.linalg.norm(v2)**2 / c**2)  # Lorentz factor for v2
+    beta = 1 / c * (v1 - v2 + 1 / gamma_2 * v2_perp) / (1 - np.dot(v1, v2) / c**2)
+    r_vers = (r2 - r1) / np.linalg.norm(r2 - r1)  # Unit vector in the direction of r2 - r1
+    gamma = np.sqrt(1 / (1 - beta**2))  # Lorentz factor for combined motion
+    D = 1 / (gamma * (1 - np.dot(beta, r_vers)))  # Doppler factor
+    return D
+
+# Function to calculate the innermost stable circular orbit (ISCO) radius
+# for a black hole with mass M and spin chi; returns 1 value in meters
+@cuda.jit(device=True)
+def R_ISCO(M, chi):
+    Z1 = 1 + (1 - chi**2)**(1/3) * ((1 + chi)**(1/3) + (1 - chi)**(1/3))
+    Z2 = np.sqrt(3 * chi**2 + Z1**2)
+    isco_ = 3 + Z2 - np.sign(chi) * np.sqrt((3 - Z1) * (3 + Z1 + 2 * Z2))
+    return isco_ * G * M / c**2
+
+# Function to calculate the Eddington luminosity 
+# Returns 1 value in ? units
+@cuda.jit(device=True)
+def L_edd(M):
+    return 4 * np.pi * G * M * c / 0.1
+
+#substitute for np.dot()
+@cuda.jit(device=True)
+def dot_product(a, b):
+    result = 0.0
+    for i in range(a.size):
+        result += a[i] * b[i]
+    return result
+
+#substitute for np.linalg.norm()
+@cuda.jit(device=True)
+def vector_norm(v):
+    norm = 0.0
+    for i in range(v.size):
+        norm += v[i] * v[i]
+    return math.sqrt(norm)

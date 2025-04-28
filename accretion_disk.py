@@ -177,7 +177,7 @@ def compute_time_delay(xi, theta, inc, d_td):
     if idx_xi < xi.size and idx_theta < theta.size:    
         d_td[idx_xi][idx_theta] = xi[idx_xi]*(1+math.sin(inc)*math.cos(theta[idx_theta]))
 
-#
+#x, y are separated cuda device
 @cuda.jit(device = True)
 def position_components(angle, R):
     x = R * math.sin(angle)  # x-coordinate

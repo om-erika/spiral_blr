@@ -28,6 +28,13 @@ def radiative_efficiency(chi):
     eta = 1 - Eisco
     return eta
 
+# Function to calculate the Eddington luminosity 
+# Returns 1 value in ? units
+@cuda.jit(device=True)
+def L_edd(M):
+    return 4 * np.pi * G * M * c / 0.1
+
+
 # Function to calculate the temperature profile of an accretion disk
 # Returns CUDA device array of temperatures for the given radii
 @cuda.jit(device=True)

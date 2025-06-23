@@ -9,7 +9,6 @@ import time as tempo
 from scipy.integrate import quad
 from matplotlib import pyplot as plt
 
-# Function to calculate the radius of the innermost stable circular orbit (ISCO)
 def R_ISCO(M, chi):
     """
     Compute radius of the innermost stable circular orbit (ISCO) for a given mass M and chi parameter.
@@ -50,9 +49,6 @@ def de_evolve(xi, theta, time, initial_phase, M, inc):
     kf = keplerian_freq(M, xi) 
     return (theta - (time -td)*kf + initial_phase) - (2.*math.pi)*math.floor((theta - (time -td)*kf + initial_phase)/(2.*math.pi))
 
-#Function to compute time delay
-# Modifies a pre-allocated CUDA device array (filled with zeros) with the de-evolved angles
-# @cuda.jit(device=True) would be more efficient if we don't need to save them in a device array
 @cuda.jit(device=True)
 def time_delay(xi, theta, inc):
     """
@@ -70,7 +66,6 @@ def time_delay(xi, theta, inc):
     """
     return xi*(1+math.sin(inc)*math.cos(theta))
 
-#x, y are separated cuda device
 @cuda.jit(device = True)
 def position_components(angle, R):
     """
@@ -87,7 +82,7 @@ def position_components(angle, R):
     y = R * math.cos(angle)  # y-coordinate
     return (x,y)
 
-#vx, vy are separated cuda device
+
 @cuda.jit(device = True)
 def velocity_components(angle, R, M, corot=0):
     """
@@ -559,6 +554,53 @@ def test_kernel(angle, R, M, inc, times, gp_times, d_temp_curves, initial_phase,
         else:
             d_debug[idx_times, idx_angle, idx_R] = theta_prime
 
+def accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times):
+    D = np.zeros((len(times), len(angle), len(r)))
+    angl = np.zeros((len(times), len(angle), len(r)))
+    vx = np.zeros((len(times), len(angle), len(r)))
+    vy = np.zeros((len(times), len(angle), len(r)))
+    x = np.zeros((len(times), len(angle), len(r)))
+    y = np.zeros((len(times), len(angle), len(r)))
+    T= np.zeros((len(times), len(angle), len(r)))
+    flux = np.zeros((len(times), len(angle), len(r)))
+
+    for idx_time, t in enumerate(times):
+        for idx_ang, ang in enumerate(angle):
+            for idx_r, erre in enumerate(r):
+                td = erre*(1+math.sin(inc)*math.cos(ang))
+                kf = math.sqrt(G * M / erre**3)
+                
+                ang_pre = (ang - (t -td)*kf + 0.) - (2*math.pi) * math.floor((ang - (t -td)*kf + 0.)/(2*math.pi)) 
+                angl[idx_time, idx_ang, idx_r] = ang_pre
+                v_kep = math.sqrt(G * M / erre)  # Keplerian velocity
+
+                vx[idx_time, idx_ang, idx_r] = v_kep*np.cos(ang_pre)
+                vy[idx_time, idx_ang, idx_r] = -v_kep*np.sin(ang_pre)
+                x[idx_time, idx_ang, idx_r] = erre * math.sin(ang_pre)
+                y[idx_time, idx_ang, idx_r] = erre*math.cos(ang_pre)
+
+                r2 = np.array([erre * math.sin(ang_pre), erre * math.cos(ang_pre)]) 
+                v2 = np.array([v_kep*np.cos(ang_pre), -v_kep*np.sin(ang_pre)])
+                
+                v2_para = np.dot(v2, v1) * v1 / np.linalg.norm(v1)**2  # Parallel component of v2 
+                v2_perp = v2 - v2_para  # Perpendicular component of v2
+                gamma_2 = 1 / np.sqrt(1 - np.linalg.norm(v2)**2 / c**2)  # Lorentz factor for v2
+                beta = 1 / c * (v1 - v2 + 1 / gamma_2 * v2_perp) / (1 - np.dot(v1, v2) / c**2)
+                r_vers = (r2 - r1) / np.linalg.norm(r2 - r1)  # Unit vector in the direction of r2 - r1
+                gamma = np.sqrt(1 / (1 - np.linalg.norm(beta)**2))
+                dop = 1 / (gamma * (1 - np.dot(beta, r_vers)))
+
+                D[idx_time, idx_ang, idx_r] = dop
+
+                temp = approximate_temperature(t, temp_curves[:, idx_ang, idx_r], gp_times)
+
+                T[idx_time, idx_ang, idx_r] = temp
+                f = ionizing_flux_element(dop*temp/(1+z), dop, erre,dr,dtheta)
+
+                flux[idx_time, idx_ang, idx_r] = f
+
+    return angl, x, y, vx, vy, D, T, flux
+
 if __name__ == '__main__':
 
     #function to be tested: 0 = de_evolve, 1 = doppler, 2 = temperature, 3 = flux 
@@ -586,10 +628,10 @@ if __name__ == '__main__':
     r = np.logspace(np.log10(1.1*R_in),np.log10(3.0*R_in), 175).astype(np.float64)
     #r = np.linspace(100,200).astype(np.float64)
     angle = np.linspace(0., 2.*np.pi, 175).astype(np.float64)
-    times = np.linspace(20., 40., 175).astype(np.float64)
+    times = np.logspace(1., 5., 175).astype(np.float64)
 
     #times for temperature curves: ranges depend on times
-    gp_times = np.linspace(0., 50., 1000).astype(np.float64)
+    gp_times = np.logspace(0., 6., 1000).astype(np.float64)
 
     # dr, dtheta from linspaces
     dr = r[1]-r[0]
@@ -663,77 +705,13 @@ if __name__ == '__main__':
 
 
     """3. Flux Generation with CPU"""
-    D = []
-    angl = []
-    vx = []
-    vy = []
-    x = []
-    y = []
-    T = []
-    flux = []
     r1= r_obs.copy_to_host()#np.array([100., 100.])
     v1 = v_obs.copy_to_host()#np.array([c/2, c/2])
 
     start_time_cpu = tempo.time()
-    for t in times:
-        for idx_ang, ang in enumerate(angle):
-            for idx_r, erre in enumerate(r):
-                td = erre*(1+math.sin(inc)*math.cos(ang))
-                kf = math.sqrt(G * M / erre**3)
-                ##phi - 2*math.pi * math.floor(phi / (2*math.pi))
-                #(theta - (time -td)*kf + initial_phase) - (2.*math.pi)*math.floor((theta - (time -td)*kf + initial_phase)/(2.*math.pi))
-
-                ang_pre = (ang - (t -td)*kf + 0.) - (2*math.pi) * math.floor((ang - (t -td)*kf + 0.)/(2*math.pi)) 
-                angl.append(ang_pre)
-                v_kep = math.sqrt(G * M / erre)  # Keplerian velocity
-                vx.append(v_kep*np.cos(ang_pre))
-                vy.append(-v_kep*np.sin(ang_pre))
-                x.append(erre * math.sin(ang_pre))
-                y.append(erre*math.cos(ang_pre))
-
-                r2 = np.array([erre * math.sin(ang_pre), erre * math.cos(ang_pre)]) 
-                v2 = np.array([v_kep*np.cos(ang_pre), -v_kep*np.sin(ang_pre)])
-                
-                v2_para = np.dot(v2, v1) * v1 / np.linalg.norm(v1)**2  # Parallel component of v2 
-                v2_perp = v2 - v2_para  # Perpendicular component of v2
-                gamma_2 = 1 / np.sqrt(1 - np.linalg.norm(v2)**2 / c**2)  # Lorentz factor for v2
-                beta = 1 / c * (v1 - v2 + 1 / gamma_2 * v2_perp) / (1 - np.dot(v1, v2) / c**2)
-                r_vers = (r2 - r1) / np.linalg.norm(r2 - r1)  # Unit vector in the direction of r2 - r1
-                gamma = np.sqrt(1 / (1 - np.linalg.norm(beta)**2))
-                dop = 1 / (gamma * (1 - np.dot(beta, r_vers)))
-                D.append(dop)  # Doppler factor
-
-                #Z1 = 1 + (1 - chi**2)**(1/3) * ((1 + chi)**(1/3) + (1 - chi)**(1/3))
-                #Z2 = np.sqrt(3 * chi**2 + Z1**2)
-                #Eisco = (4 - chi * Z1 - np.sqrt(3 * Z2 - 2 * Z1)) / (3 * np.sqrt(3))
-                #eta = 1 - Eisco
-                #M_dot = f_edd * 4*np.pi*G*M * c / 0.1 / (eta * c**2)
-                #temp = ((3 * G *M*M_dot) / (8 * np.pi * sigma_B * erre**3))**(1/4) * (1 - np.sqrt(R_in / erre))**(1/4)
-                temp = approximate_temperature(t, temp_curves[:, idx_ang, idx_r], gp_times)
-                T.append(temp)
-                f = ionizing_flux_element(dop*temp/(1+z), dop, erre,dr,dtheta)
-                flux.append(f)
-
-    end_time_cpu = tempo.time()
-
-    angl = np.array(angl)
-    angl = angl.reshape(len(times), len(angle), len(r))
-    y = np.array(y)
-    x = np.array(x)
-    x = x.reshape(len(times), len(angle), len(r))
-    y = np.array(y)
-    y = y.reshape(len(times), len(angle), len(r))
-    vx = np.array(vx)
-    vx = vx.reshape(len(times), len(angle), len(r))
-    vy = np.array(vy)
-    vy = vy.reshape(len(times), len(angle), len(r))
-    D = np.array(D)
-    D = D.reshape(len(times), len(angle), len(r))
-    T = np.array(T)
-    T = T.reshape(len(times), len(angle), len(r))
-    flux = np.array(flux)
-    flux = flux.reshape(len(times), len(angle), len(r))
+    angl, x, y, vx, vy, D, T, flux = accretion_disk(r,angle, times, r1, v1, temp_curves, gp_times)
     flux_def = np.array(np.sum(np.sum(flux, axis = 2), axis=1))
+    end_time_cpu = tempo.time()
     print("Total elements in f_def:", flux_def.shape)
     print("Expected elements:", len(times))
 

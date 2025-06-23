@@ -606,6 +606,7 @@ if __name__ == '__main__':
     #function to be tested: 0 = de_evolve, 1 = doppler, 2 = temperature, 3 = flux 
     arg = int(sys.argv[1]) 
     print(f"Argument received: {arg}")
+    np.random.seed(42)
 
     # Defining constants
     h = 6.62607015e-34  # Planck's constant (Joule-seconds)
@@ -621,7 +622,7 @@ if __name__ == '__main__':
     R_in = np.float64(1.5*R_ISCO(M, chi))   # R_in
     f_edd = 0.5                             # f_edd
     z = 0.1                                 # redshift
-    tau = 100.                              # DRW tau
+    tau = 100.*86400.                              # DRW tau
     sigma = 0.5                             # DRW sigma
 
     """ Radii, angles and times definition: change linspace size to speed up computation """
@@ -670,6 +671,8 @@ if __name__ == '__main__':
     ax.set_xlabel('Time [s]')
     ax.set_ylabel('Temperature [K]')
     ax.legend()
+    ax.set_xscale('log')
+    ax.set_yscale('log')
     plt.savefig('test/temp_curves.png', dpi = 300, bbox_inches = 'tight')
     ax.clear()
 
@@ -747,11 +750,11 @@ if __name__ == '__main__':
         print('CPU: ', flux_def[i])
     
     # check for infs values (to verify consistency of input parameters mostly)
-    print("Any infs?", np.isinf(flux_def).any())
+    print("Any infs (GPU)?", np.isinf(flux_def).any())
     print("Positive infs:", np.where(flux_def == np.inf)[0].shape)
     print("Negative infs:", np.where(flux_def == -np.inf)[0].shape)
 
-    print("Any infs?", np.isinf(deb_def).any())
+    print("Any infs (CPU)?", np.isinf(deb_def).any())
     print("Positive infs:", np.where(deb_def == np.inf)[0].shape)
     print("Negative infs:", np.where(deb_def == -np.inf)[0].shape)
 
@@ -790,6 +793,8 @@ if __name__ == '__main__':
         ax.plot(times, tested_function[:, 1, 1], label = r'flux, element 1')
         ax.set_ylabel(r'Flux')
     ax.set_xlabel('Time [s]')
+    ax.set_xscale('log')
+    ax.set_yscale('log')
     ax.legend()
     plt.savefig(filename, dpi = 300, bbox_inches = 'tight')
     ax.clear()    

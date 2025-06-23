@@ -1,10 +1,13 @@
 import numba
+import sys
 from numba import cuda, float64
 import numpy as np
 import math
 import celerite
 from celerite import terms
 import time as tempo
+from scipy.integrate import quad
+from matplotlib import pyplot as plt
 
 # Function to calculate the radius of the innermost stable circular orbit (ISCO)
 def R_ISCO(M, chi):
@@ -509,19 +512,17 @@ def ionizing_flux_element(T,D,R,dr,dtheta):
     return flux*R*dr*dtheta
 
 @cuda.jit()
-def accretion_disk_kernel(angle, R, M, times, gp_times, d_temp_curves, initial_phase, v_obs, r_obs, d_debug):
+def accretion_disk_kernel(angle, R, M, inc, times, gp_times, d_temp_curves, initial_phase, v_obs, r_obs, d_debug):
     idx_times, idx_angle, idx_R = cuda.grid(3)
     
     #starting_light_curve = cuda.shared.array(d_temp_curves, dtype=float64)
     if idx_times < times.size and idx_angle < angle.size and idx_R < R.size:
-        j = idx_angle
-        k = idx_R
         r = R[idx_R]
         theta = angle[idx_angle]
         gp_temp = d_temp_curves[:, idx_angle, idx_R]
         t = times[idx_times]
 
-        theta_prime = de_evolve(float64(r), float64(theta), float64(t), float64(initial_phase), float64(M))
+        theta_prime = de_evolve(r, theta, t, initial_phase, M, inc)
 
         positions = position_components(theta_prime, r) #returns (x,y), if check you need d_debug = positions[i]
         velocities = velocity_components(theta_prime, r, M, 0.)
@@ -529,7 +530,41 @@ def accretion_disk_kernel(angle, R, M, times, gp_times, d_temp_curves, initial_p
         T = find_temperature(gp_times, gp_temp, t)
         d_debug[idx_times, idx_angle, idx_R] = compute_ionizing_flux(T,doppler,z, positions,dr,dtheta)
 
-if __name__ == 'main_':
+@cuda.jit()
+def test_kernel(angle, R, M, inc, times, gp_times, d_temp_curves, initial_phase, v_obs, r_obs, d_debug, test_function):
+    idx_times, idx_angle, idx_R = cuda.grid(3)
+    
+    #starting_light_curve = cuda.shared.array(d_temp_curves, dtype=float64)
+    if idx_times < times.size and idx_angle < angle.size and idx_R < R.size:
+        r = R[idx_R]
+        theta = angle[idx_angle]
+        gp_temp = d_temp_curves[:, idx_angle, idx_R]
+        t = times[idx_times]
+
+    
+        theta_prime = de_evolve(r, theta, t, initial_phase, M, inc)
+        if int(test_function) != 0:
+            positions = position_components(theta_prime, r) #returns (x,y), if check you need d_debug = positions[i]
+            velocities = velocity_components(theta_prime, r, M, 0.)
+            doppler = doppler_factor(v_obs, velocities, r_obs, positions) 
+            if int(test_function) != 1:
+                T = find_temperature(gp_times, gp_temp, t)
+                #d_debug[idx_times, idx_angle, idx_R] = T 
+                if int(test_function) != 2:
+                    d_debug[idx_times, idx_angle, idx_R] = compute_ionizing_flux(T,doppler,z, positions,dr,dtheta)
+                else:
+                    d_debug[idx_times, idx_angle, idx_R] = T
+            else:
+                d_debug[idx_times, idx_angle, idx_R] = doppler
+        else:
+            d_debug[idx_times, idx_angle, idx_R] = theta_prime
+
+if __name__ == '__main__':
+
+    #function to be tested: 0 = de_evolve, 1 = doppler, 2 = temperature, 3 = flux 
+    arg = int(sys.argv[1]) 
+    print(f"Argument received: {arg}")
+
     # Defining constants
     h = 6.62607015e-34  # Planck's constant (Joule-seconds)
     c = 3e8  # Speed of light (m/s)
@@ -538,37 +573,45 @@ if __name__ == 'main_':
     sigma_B = 1.28e-23  # Stefan-Boltzmann constant (W/m^2/K^4)
     M_sun = np.float64(2e30)  # Solar mass (kg)
 
-    M = np.float64(1e8*M_sun)
-    d_M = cuda.to_device(M)
-    inc = np.radians(30.)
-    chi = 0.8
-    R_in = np.float64(1.5*R_ISCO(M, chi))
-    f_edd = 0.5
-    z = 0.1
-    tau = 100.
-    sigma = 0.5
+    M = np.float64(1e8*M_sun)               # Black hole mass
+    inc = np.radians(30.)                   # Inclination
+    chi = 0.8                               # Spin Parameter
+    R_in = np.float64(1.5*R_ISCO(M, chi))   # R_in
+    f_edd = 0.5                             # f_edd
+    z = 0.1                                 # redshift
+    tau = 100.                              # DRW tau
+    sigma = 0.5                             # DRW sigma
 
-    r = np.logspace(1.1*R_in,3.0*R_in, 20).astype(np.float64) #if r_1 = R_in Nan for high chi, check
+    """ Radii, angles and times definition: change linspace size to speed up computation """
+    r = np.logspace(np.log10(1.1*R_in),np.log10(3.0*R_in), 175).astype(np.float64)
     #r = np.linspace(100,200).astype(np.float64)
-    angle = np.linspace(0., 2.*np.pi, 20).astype(np.float64)
-    times = np.linspace(20., 40., 20).astype(np.float64)
+    angle = np.linspace(0., 2.*np.pi, 175).astype(np.float64)
+    times = np.linspace(20., 40., 175).astype(np.float64)
+
+    #times for temperature curves: ranges depend on times
     gp_times = np.linspace(0., 50., 1000).astype(np.float64)
 
+    # dr, dtheta from linspaces
     dr = r[1]-r[0]
     dtheta = angle[1]-angle[0]
+
+    #setting cuda devices
     d_r = cuda.to_device(r)
     d_angle = cuda.to_device(angle)
     d_times = cuda.to_device(times)
     d_gp_times = cuda.to_device(gp_times)
-    r_obs = cuda.to_device([5.0*R_in,5.0*R_in])
-    #r_obs = cuda.to_device([100,100])
-    v_obs = cuda.to_device([c/2,c/2])
 
+    """Properties of BLR element: will become 2D matrices with dimensions(2, 175x175)"""
+    r_obs = cuda.to_device([300.0*R_in,300.0*R_in])
+    v_obs = cuda.to_device([c/2,c/2]) #fai conto da r_obs
+
+    #setting cuda devices
     deb = np.zeros([times.size, angle.size, r.size])
     d_deb = cuda.to_device(deb)
     deb_def = np.zeros([times.size])
     d_deb_def = cuda.to_device(deb_def)
 
+    """ STEP 1. TEMPERATURE CURVES GENERATION"""
     start_time = tempo.time()
     temp_curves = generate_set_of_temperatures(gp_times, r, angle, M, f_edd, chi, R_in, tau, sigma)
     temp_curves = np.ascontiguousarray(temp_curves)
@@ -578,21 +621,198 @@ if __name__ == 'main_':
     print('Resulting shape', d_temp_curves.shape)
     print('Tempo per generare curve di temperatura:', end_time-start_time)
 
+    #plotting temperature curves
+    ax = plt.gca()
+    ax.plot(gp_times, temp_curves[:, 0,0], label = 'T curve, element 0')
+    ax.plot(gp_times, temp_curves[:, 1,1], label = 'T curve, element 1')
+    ax.set_xlabel('Time [s]')
+    ax.set_ylabel('Temperature [K]')
+    ax.legend()
+    plt.savefig('test/temp_curves.png', dpi = 300, bbox_inches = 'tight')
+    ax.clear()
+
+    #GPU settings
     threads_per_block =  (4)
     blocks_per_grid = (
-      (d_times.size + (threads_per_block - 1)) // threads_per_block,
+        (d_times.size + (threads_per_block - 1)) // threads_per_block,
     )
 
     threads_per_block_1 =  (4,4,4)
     blocks_per_grid_1 = (
-      (d_times.size + (threads_per_block_1[0] - 1)) // threads_per_block_1[0],
-      (d_angle.size + (threads_per_block_1[1] - 1)) // threads_per_block_1[1],
-      (d_r.size + (threads_per_block_1[2] - 1)) // threads_per_block_1[2]
+        (d_times.size + (threads_per_block_1[0] - 1)) // threads_per_block_1[0],
+        (d_angle.size + (threads_per_block_1[1] - 1)) // threads_per_block_1[1],
+        (d_r.size + (threads_per_block_1[2] - 1)) // threads_per_block_1[2]
     )
 
+    """2. Flux generation with GPU"""
     start_time_gpu = tempo.time()
-    accretion_disk_kernel[blocks_per_grid_1, threads_per_block_1](d_angle, d_r, M, d_times, d_gp_times, d_temp_curves,  0., v_obs, r_obs, d_deb)
+    accretion_disk_kernel[blocks_per_grid_1, threads_per_block_1](d_angle, d_r, M, inc, d_times, d_gp_times, d_temp_curves,  0., v_obs, r_obs, d_deb)
     cuda.synchronize()
     sum_kernel[blocks_per_grid, threads_per_block](d_r, d_angle, d_times, d_deb, d_deb_def)
     cuda.synchronize()
     end_time_gpu_without_copying = tempo.time()
+
+    deb = d_deb.copy_to_host()
+    print(f'Expected shape: ({len(times):.0f}, {len(angle):.0f}, {len(r):.0f})')
+    print('Resulting shape', deb.shape)
+    end_time_gpu = tempo.time()
+
+    deb_def = d_deb_def.copy_to_host()
+    print(f'Expected shape: ({len(times):.0f})')
+    print('Resulting shape', deb_def.shape)
+
+
+    """3. Flux Generation with CPU"""
+    D = []
+    angl = []
+    vx = []
+    vy = []
+    x = []
+    y = []
+    T = []
+    flux = []
+    r1= r_obs.copy_to_host()#np.array([100., 100.])
+    v1 = v_obs.copy_to_host()#np.array([c/2, c/2])
+
+    start_time_cpu = tempo.time()
+    for t in times:
+        for idx_ang, ang in enumerate(angle):
+            for idx_r, erre in enumerate(r):
+                td = erre*(1+math.sin(inc)*math.cos(ang))
+                kf = math.sqrt(G * M / erre**3)
+                ##phi - 2*math.pi * math.floor(phi / (2*math.pi))
+                #(theta - (time -td)*kf + initial_phase) - (2.*math.pi)*math.floor((theta - (time -td)*kf + initial_phase)/(2.*math.pi))
+
+                ang_pre = (ang - (t -td)*kf + 0.) - (2*math.pi) * math.floor((ang - (t -td)*kf + 0.)/(2*math.pi)) 
+                angl.append(ang_pre)
+                v_kep = math.sqrt(G * M / erre)  # Keplerian velocity
+                vx.append(v_kep*np.cos(ang_pre))
+                vy.append(-v_kep*np.sin(ang_pre))
+                x.append(erre * math.sin(ang_pre))
+                y.append(erre*math.cos(ang_pre))
+
+                r2 = np.array([erre * math.sin(ang_pre), erre * math.cos(ang_pre)]) 
+                v2 = np.array([v_kep*np.cos(ang_pre), -v_kep*np.sin(ang_pre)])
+                
+                v2_para = np.dot(v2, v1) * v1 / np.linalg.norm(v1)**2  # Parallel component of v2 
+                v2_perp = v2 - v2_para  # Perpendicular component of v2
+                gamma_2 = 1 / np.sqrt(1 - np.linalg.norm(v2)**2 / c**2)  # Lorentz factor for v2
+                beta = 1 / c * (v1 - v2 + 1 / gamma_2 * v2_perp) / (1 - np.dot(v1, v2) / c**2)
+                r_vers = (r2 - r1) / np.linalg.norm(r2 - r1)  # Unit vector in the direction of r2 - r1
+                gamma = np.sqrt(1 / (1 - np.linalg.norm(beta)**2))
+                dop = 1 / (gamma * (1 - np.dot(beta, r_vers)))
+                D.append(dop)  # Doppler factor
+
+                #Z1 = 1 + (1 - chi**2)**(1/3) * ((1 + chi)**(1/3) + (1 - chi)**(1/3))
+                #Z2 = np.sqrt(3 * chi**2 + Z1**2)
+                #Eisco = (4 - chi * Z1 - np.sqrt(3 * Z2 - 2 * Z1)) / (3 * np.sqrt(3))
+                #eta = 1 - Eisco
+                #M_dot = f_edd * 4*np.pi*G*M * c / 0.1 / (eta * c**2)
+                #temp = ((3 * G *M*M_dot) / (8 * np.pi * sigma_B * erre**3))**(1/4) * (1 - np.sqrt(R_in / erre))**(1/4)
+                temp = approximate_temperature(t, temp_curves[:, idx_ang, idx_r], gp_times)
+                T.append(temp)
+                f = ionizing_flux_element(dop*temp/(1+z), dop, erre,dr,dtheta)
+                flux.append(f)
+
+    end_time_cpu = tempo.time()
+
+    angl = np.array(angl)
+    angl = angl.reshape(len(times), len(angle), len(r))
+    y = np.array(y)
+    x = np.array(x)
+    x = x.reshape(len(times), len(angle), len(r))
+    y = np.array(y)
+    y = y.reshape(len(times), len(angle), len(r))
+    vx = np.array(vx)
+    vx = vx.reshape(len(times), len(angle), len(r))
+    vy = np.array(vy)
+    vy = vy.reshape(len(times), len(angle), len(r))
+    D = np.array(D)
+    D = D.reshape(len(times), len(angle), len(r))
+    T = np.array(T)
+    T = T.reshape(len(times), len(angle), len(r))
+    flux = np.array(flux)
+    flux = flux.reshape(len(times), len(angle), len(r))
+    flux_def = np.array(np.sum(np.sum(flux, axis = 2), axis=1))
+    print("Total elements in f_def:", flux_def.shape)
+    print("Expected elements:", len(times))
+
+    """4. Consistency check between CPU-GPU results 
+    (works for flux now because accretion_disk_kernel gives back flux)"""
+    check = 'f' #choices = ['ang','x', 'y', 'vx', 'vy', 'D', 'T', 'DT', 'f']
+    choice_map = {
+        'angl': angl,
+        'x': x,
+        'y': y,
+        'vx': vx,
+        'vy': vy,
+        'D': D,
+        'T': T,
+        'DT': D * T,
+        'f': flux
+    }
+
+    deb_cpu = choice_map.get(check)
+
+    i = np.random.randint(deb.shape[0])
+    j = np.random.randint(deb.shape[1])
+    k = np.random.randint(deb.shape[2])
+    print('----------------------------- Check '+check+' --------------------------------------')
+    print('GPU: ', deb[i, j, k])
+    print('CPU: ', deb_cpu[i, j, k])
+
+    check_def = True
+    if check_def:
+        i = np.random.randint(deb_def.shape[0])
+        print('----------------------------- Final Check --------------------------------------')
+        print('GPU: ', deb_def[i])
+        print('CPU: ', flux_def[i])
+    
+    # check for infs values (to verify consistency of input parameters mostly)
+    print("Any infs?", np.isinf(flux_def).any())
+    print("Positive infs:", np.where(flux_def == np.inf)[0].shape)
+    print("Negative infs:", np.where(flux_def == -np.inf)[0].shape)
+
+    print("Any infs?", np.isinf(deb_def).any())
+    print("Positive infs:", np.where(deb_def == np.inf)[0].shape)
+    print("Negative infs:", np.where(deb_def == -np.inf)[0].shape)
+
+    # check for timescales
+    print('---------------------- Check Tempistiche -----------------------------')
+    print('Tempo impiegato con GPU:', end_time_gpu_without_copying-start_time_gpu)
+    print('Tempo impiegato con GPU+copia su CPU:', end_time_gpu-start_time_gpu)
+    print('Tempo impiegato con CPU:', end_time_cpu-start_time_cpu)
+    
+
+    """5. Test Functions
+    based on arg given, plot one function results for 2 elements of the accretion disk"""
+    d_deb = cuda.to_device(np.zeros([times.size, angle.size, r.size]))
+    test_kernel[blocks_per_grid_1, threads_per_block_1](d_angle, d_r, M, inc, d_times, d_gp_times, d_temp_curves,  0., v_obs, r_obs, d_deb, arg)
+    tested_function = d_deb.copy_to_host()
+    ax = plt.gca()
+
+    if arg == 0:
+        filename = 'test/de_evolved_theta.png'
+        ax.plot(times, tested_function[:, 0, 0], label = r'$\theta$ de-evolved, element 0')
+        ax.plot(times, tested_function[:, 1, 1], label = r'$\theta$ de-evolved, element 1')
+        ax.set_ylabel(r'$\theta$ [rad]')
+    if arg == 1:
+        filename = 'test/doppler.png'
+        ax.plot(times, tested_function[:, 0, 0], label = r'Doppler, element 0')
+        ax.plot(times, tested_function[:, 1, 1], label = r'Doppler, element 1')
+        ax.set_ylabel(r'Doppler')
+    if arg == 2:
+        filename = 'test/temperature.png'
+        ax.plot(times, tested_function[:, 0, 0], label = r'T, element 0')
+        ax.plot(times, tested_function[:, 1, 1], label = r'T, element 1')
+        ax.set_ylabel(r'T [K]')
+    if arg == 3:
+        filename = 'test/flux.png'
+        ax.plot(times, tested_function[:, 0, 0], label = r'flux, element 0')
+        ax.plot(times, tested_function[:, 1, 1], label = r'flux, element 1')
+        ax.set_ylabel(r'Flux')
+    ax.set_xlabel('Time [s]')
+    ax.legend()
+    plt.savefig(filename, dpi = 300, bbox_inches = 'tight')
+    ax.clear()    
+    

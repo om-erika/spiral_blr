@@ -1,4 +1,8 @@
+#ignore time evaluation folder
 error_time_evaluation/
 
+#ignore all .png files
 *.png
+
+#ignore all .txt files
 *.txt

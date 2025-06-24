@@ -1,5 +1,7 @@
-#ignore time evaluation folder
+#ignore test folders
 error_time_evaluation/
+test/
+test_cpu/
 
 #ignore all .png files
 *.png

@@ -626,10 +626,10 @@ if __name__ == '__main__':
     sigma = 0.5                             # DRW sigma
 
     """ Radii, angles and times definition: change linspace size to speed up computation """
-    r = np.logspace(np.log10(1.1*R_in),np.log10(3.0*R_in), 175).astype(np.float64)
+    r = np.logspace(np.log10(1.1*R_in),np.log10(3.0*R_in), 50).astype(np.float64)
     #r = np.linspace(100,200).astype(np.float64)
-    angle = np.linspace(0., 2.*np.pi, 175).astype(np.float64)
-    times = np.logspace(1., 5., 175).astype(np.float64)
+    angle = np.linspace(0., 2.*np.pi, 50).astype(np.float64)
+    times = np.logspace(1., 5., 50).astype(np.float64)
 
     #times for temperature curves: ranges depend on times
     gp_times = np.logspace(0., 6., 1000).astype(np.float64)
@@ -787,14 +787,17 @@ if __name__ == '__main__':
         ax.plot(times, tested_function[:, 0, 0], label = r'T, element 0')
         ax.plot(times, tested_function[:, 1, 1], label = r'T, element 1')
         ax.set_ylabel(r'T [K]')
+        ax.set_xscale('log')
+        ax.set_yscale('log')
     if arg == 3:
         filename = 'test/flux.png'
         ax.plot(times, tested_function[:, 0, 0], label = r'flux, element 0')
         ax.plot(times, tested_function[:, 1, 1], label = r'flux, element 1')
         ax.set_ylabel(r'Flux')
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+    
     ax.set_xlabel('Time [s]')
-    ax.set_xscale('log')
-    ax.set_yscale('log')
     ax.legend()
     plt.savefig(filename, dpi = 300, bbox_inches = 'tight')
     ax.clear()    

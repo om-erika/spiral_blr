@@ -151,7 +151,7 @@ def doppler_factor(v1, v2, r1, r2):
     norm_v1_sq = v1[0]*v1[0] + v1[1]*v1[1]#dot_product(v1, v1)#v1[0]*v1[0] + v1[1]*v1[1]
     norm_v2_sq = v2[0]*v2[0] + v2[1]*v2[1]#dot_product(v2, v2) #v2[0]*v2[0] + v2[1]*v2[1]
     v2_dot_v1 = v2[0]*v1[0] + v2[1]*v1[1]#dot_product(v2, v1) #v2[0]*v1[0] + v2[1]*v1[1]
-    norm_v1_minus_v2_sq = (v1[0]-v2[0])*(v1[0]-v2[0]) + (v1[1]-v2[1])*(v1[1]-v2[1])#dot_product(v1-v2, v1-v2) #(v1[0]-v2[0])*(v1[0]-v2[0]) + (v1[1]-v2[1])*(v1[1]-v2[1])
+    #norm_v1_minus_v2_sq = (v1[0]-v2[0])*(v1[0]-v2[0]) + (v1[1]-v2[1])*(v1[1]-v2[1])#dot_product(v1-v2, v1-v2) #(v1[0]-v2[0])*(v1[0]-v2[0]) + (v1[1]-v2[1])*(v1[1]-v2[1])
     
     # Parallel components of v2
     v2_para_x = (v2_dot_v1 / norm_v1_sq) * v1[0]
@@ -626,10 +626,10 @@ if __name__ == '__main__':
     sigma = 0.5                             # DRW sigma
 
     """ Radii, angles and times definition: change linspace size to speed up computation """
-    r = np.logspace(np.log10(1.1*R_in),np.log10(3.0*R_in), 50).astype(np.float64)
+    r = np.logspace(np.log10(1.1*R_in),np.log10(3.0*R_in), 175).astype(np.float64)
     #r = np.linspace(100,200).astype(np.float64)
-    angle = np.linspace(0., 2.*np.pi, 50).astype(np.float64)
-    times = np.logspace(1., 5., 50).astype(np.float64)
+    angle = np.linspace(0., 2.*np.pi, 175).astype(np.float64)
+    times = np.logspace(1., 5., 175).astype(np.float64)
 
     #times for temperature curves: ranges depend on times
     gp_times = np.logspace(0., 6., 1000).astype(np.float64)

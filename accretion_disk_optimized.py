@@ -6,6 +6,7 @@ import time as tempo
 from scipy.integrate import quad
 from scipy.interpolate import interp1d
 from matplotlib import pyplot as plt
+import tracemalloc
 
 def R_ISCO(M, chi):
     """
@@ -35,8 +36,8 @@ def radiative_efficiency_cpu(chi):
         float: Computed radiative efficiency for the given chi value.
     """
     Z1 = 1 + (1 - chi**2)**(1/3) * ((1 + chi)**(1/3) + (1 - chi)**(1/3))
-    Z2 = math.sqrt(3 * chi**2 + Z1**2)
-    Eisco = (4 - chi * Z1 - math.sqrt(3 * Z2 - 2 * Z1)) / (3 * math.sqrt(3))
+    Z2 = np.sqrt(3 * chi**2 + Z1**2)
+    Eisco = (4 - chi * Z1 - np.sqrt(3 * Z2 - 2 * Z1)) / (3 * np.sqrt(3))
     eta = 1 - Eisco
     return eta
 
@@ -50,7 +51,7 @@ def L_edd_cpu(M):
     Returns:
         float: Computed L_edd for BH with mass M.
     """
-    return 4*math.pi*G*M*c/0.1
+    return 4*np.pi*G*M*c/0.1
     
 def Temperature(R, M, f_edd, chi, R_in):
     """
@@ -68,7 +69,7 @@ def Temperature(R, M, f_edd, chi, R_in):
     """
     eta = radiative_efficiency_cpu(chi)
     M_dot = f_edd*L_edd_cpu(M)/(eta*c**2)
-    return ((3*G*M*M_dot)/(8*math.pi*sigma_B*R**3))**(1/4)*(1-math.sqrt(R_in/R))**(1/4)  
+    return ((3*G*M*M_dot)/(8*np.pi*sigma_B*R**3))**(1/4)*(1-np.sqrt(R_in/R))**(1/4)  
 
 
 def generate_set_of_temperatures(times, Rs, thetas, M, f_edd, chi, R_in, tau, sigma):
@@ -203,6 +204,8 @@ def new_ionizing_flux_element(T, R, dr, dtheta, num_points=1000):
     return flux_integrated * R * dr * dtheta
 
 def accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times):
+    tracemalloc.start()
+    snapshot1_before = tracemalloc.take_snapshot()
     """
     Function to loop on r, angle, times to obtain the flux.
     Used to check if reshape/meshgrid versions are consistent
@@ -231,8 +234,6 @@ def accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times):
     T= np.zeros((len(times), len(angle), len(r)))
     flux = np.zeros((len(times), len(angle), len(r)))
 
-    #check = np.zeros((2, len(times), len(angle), len(r)))
-
     for idx_time, t in enumerate(times):
         for idx_ang, ang in enumerate(angle):
             for idx_r, erre in enumerate(r):
@@ -241,7 +242,6 @@ def accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times):
                 
                 ang_pre = (ang - (t -td)*kf + 0.) - (2*np.pi) * np.floor((ang - (t -td)*kf + 0.)/(2*np.pi)) 
                 
-                #angl.append(ang_pre)
                 angl[idx_time, idx_ang, idx_r] = ang_pre
                 v_kep = np.sqrt(G * M / erre)  # Keplerian velocity
                 vx[idx_time, idx_ang, idx_r] = v_kep*np.cos(ang_pre)
@@ -253,9 +253,6 @@ def accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times):
                 v2 = np.array([v_kep*np.cos(ang_pre), -v_kep*np.sin(ang_pre)])
 
                 v2_para = np.dot(v2, v1) * v1 / (np.linalg.norm(v1)*np.linalg.norm(v1))  # Parallel component of v2 
-                #D[idx_time, idx_ang, idx_r] = v2[0]
-                #D[idx_time, idx_ang, idx_r] = np.dot(v2, v1)
-                #check[:, idx_time, idx_ang, idx_r] = v2_para
                 v2_perp = v2 - v2_para  # Perpendicular component of v2
                 gamma_2 = 1 / np.sqrt(1 - np.linalg.norm(v2)**2 / c**2)  # Lorentz factor for v2
                 beta = 1 / c * (v1 - v2 + 1 / gamma_2 * v2_perp) / (1 - np.dot(v1, v2) / c**2)
@@ -264,17 +261,80 @@ def accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times):
                 gamma_loop[:, idx_time, idx_ang, idx_r] = r_vers
                 gamma = np.sqrt(1 / (1 - np.linalg.norm(beta)**2))
                 dop = 1 / (gamma * (1 - np.dot(beta, r_vers)))
-                #D.append(dop)  # Doppler factor
                 D[idx_time, idx_ang, idx_r] = dop
 
                 temp = approximate_temperature(t, temp_curves[:, idx_ang, idx_r], gp_times)
-                #T.append(temp)
+
+                "change if sampling from gaussian"
+                #temp = temp_matrix[idx_time, idx_ang, idx_r]
+                #temp = Temperature(erre, M, f_edd, chi, R_in) 
+                #temp = sample_multivariate(t, temp, tau_array[idx_ang, idx_r], sigma_array[idx_ang, idx_r])
                 T[idx_time, idx_ang, idx_r] = temp
+                
                 f = ionizing_flux_element(dop*temp/(1+z), dop, erre,dr,dtheta)
-                #flux.append(f)
                 flux[idx_time, idx_ang, idx_r] = f
     
-    return angl, x,y, vx, vy, gamma_loop, D, T, flux
+    snapshot1_after = tracemalloc.take_snapshot()
+    return angl, x,y, vx, vy, gamma_loop, D, T, flux,snapshot1_after.compare_to(snapshot1_before, 'lineno')
+
+def sample_multivariate(times, T_means, taus, sigmas):
+    """
+    Samples a multivariate Gaussian process for each (R, theta) pair.
+
+    Parameters:
+        times (array-like): 1D array of time points.
+        T_means (array-like): 2D array of means, shape (n_R, n_theta).
+        taus (array-like): 2D array of correlation times, shape (n_R, n_theta).
+        sigmas (array-like): 2D array of standard deviations, shape (n_R, n_theta).
+
+    Note:
+        T_means, taus, and sigmas must all have the same shape, corresponding to the number of R and theta values.
+
+    Returns:
+        Temperatures (ndarray): Array of shape (n_times, n_R, n_theta), where each entry contains the sampled temperature
+        at a given time, R, and theta.
+    """
+    times = np.asarray(times)
+    T_means = np.asarray(T_means)
+    taus = np.asarray(taus)
+    sigmas = np.asarray(sigmas)
+    shape = taus.shape
+    n_times = len(times)
+    n_rows, n_cols = shape
+
+    # Compute pairwise absolute differences
+    diff = np.abs(times[:, None] - times[None, :])  # (n_times, n_times)
+
+    # Expand taus and sigmas for broadcasting
+    taus_exp = taus[None, :, :]  # (1, n_rows, n_cols)
+    sigmas_exp = sigmas[None, :, :]  # (1, n_rows, n_cols)
+    means_exp = T_means[None, :, :]  # (1, n_rows, n_cols)
+
+    Temperatures = np.zeros((n_times, n_rows, n_cols))
+    # Compute the covariance matrices for all (i, j) pairs
+    # diff: (n_times, n_times)
+    # taus, sigmas: (n_rows, n_cols)
+    # We want K: (n_times, n_times, n_rows, n_cols)
+    taus_exp = taus[None, None, :, :]  # (1, 1, n_rows, n_cols)
+    sigmas_exp = sigmas[None, None, :, :]  # (1, 1, n_rows, n_cols)
+    K = 0.5 * sigmas_exp * np.exp(-diff[:, :, None, None] / taus_exp)  # (n_times, n_times, n_rows, n_cols)
+
+    # Sample all (i, j) at once
+    # For each (i, j), sample a vector of length n_times from N(0, K[:,:,i,j])
+    # Vectorized sampling for all (i, j) pairs
+    # Reshape K to (n_rows * n_cols, n_times, n_times)
+    K_reshaped = K.reshape(n_times, n_times, -1).transpose(2, 0, 1)  # (n_rows*n_cols, n_times, n_times)
+    means_flat = means_exp.reshape(-1)  # (n_rows*n_cols,)
+
+    # Sample all at once
+    # Vectorized sampling using np.linalg.cholesky and standard normals
+    L = np.linalg.cholesky(K_reshaped + 1e-10 * np.eye(n_times)[None, :, :])  # (n_rows*n_cols, n_times, n_times)
+    z = np.random.randn(K_reshaped.shape[0], n_times)  # (n_rows*n_cols, n_times)
+    samples = (L @ z[..., None]).squeeze(-1)  # (n_rows*n_cols, n_times)
+
+    samples = samples + means_flat[:, None]  # add means
+    Temperatures = samples.T.reshape(n_times, *shape)
+    return Temperatures
 
 if __name__ == '__main__':
     np.random.seed(42)
@@ -296,13 +356,11 @@ if __name__ == '__main__':
     sigma = 0.5  
     initial_phase = 0.
 
-    time_dim = 10
-    theta_dim = 14
-    r_dim = 7
+    time_dim = 175
+    theta_dim = 175
+    r_dim = 175
     """ Radii, angles and times definition: change linspace size to speed up computation """
     r = np.logspace(np.log10(1.1*R_in),np.log10(3.0*R_in), r_dim).astype(np.float64)
-
-    #r = np.linspace(100,200).astype(np.float64)
     angle = np.linspace(0., 2.*np.pi, theta_dim).astype(np.float64)
     times = np.logspace(4., 5., time_dim).astype(np.float64)
 
@@ -317,7 +375,7 @@ if __name__ == '__main__':
     r1 = np.array([300.0*R_in,300.0*R_in])
     v1 = np.array([c/2,c/2]) #fai conto da r_obs
 
-    """ STEP 1. Temperature Curves Generation"""
+    """ STEP 1. Temperature Curves Generation """
     start_time = tempo.time()
     temp_curves = generate_set_of_temperatures(gp_times, r, angle, M, f_edd, chi, R_in, tau, sigma)
     temp_curves = np.ascontiguousarray(temp_curves)
@@ -326,11 +384,22 @@ if __name__ == '__main__':
     print('Resulting shape', temp_curves.shape)
     print('Tempo per generare curve di temperatura:', end_time-start_time)
 
+    """ STEP 1.1 Multivariate Gaussian Sampling - need to change for loop function if used """
+    #tau_array = np.ones((theta_dim, r_dim))
+    #sigma_array = np.ones((theta_dim, r_dim))
+    #temperatures = Temperature(r, M, f_edd, chi, R_in)
+    #temperatures = np.tile(temperatures, (theta_dim, 1))
+    #temperatures = sample_multivariate(times, temperatures, tau_array, sigma_array)
+
+    """ STEP 2 LOOP """
     start_time_loop = tempo.perf_counter()
-    ang_pre_loop, x_loop, y_loop, vx_loop, vy_loop, gamma_loop, dop_loop, temp_loop, flux_loop= accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times)
+    ang_pre_loop, x_loop, y_loop, vx_loop, vy_loop, gamma_loop, dop_loop, temp_loop, flux_loop, stats1 = accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times)
     flux_def_loop = np.sum(np.sum(flux_loop, axis = 2), axis = 1)
     end_time_loop = tempo.perf_counter()
-    
+
+    """ STEP 3 RESHAPE """
+    tracemalloc.start()
+    snapshot2_before = tracemalloc.take_snapshot()
     r_reshaped = r.reshape(1,1,r_dim)
     time_reshaped = times.reshape(time_dim, 1, 1)
     theta_reshaped = angle.reshape(1, theta_dim, 1)
@@ -370,15 +439,20 @@ if __name__ == '__main__':
     beta_dot_r_vers = beta[0]*r_vers[0] + beta[1]*r_vers[1]
     dop = 1 / (gamma * (1 - beta_dot_r_vers))     #np.dot(beta, r_vers)))    
 
+
+    """ change if sampling from multivariate gaussian"""
+    #temp = Temperature(r, M, f_edd, chi, R_in)
+    #temp = np.tile(temp, (theta_dim,1))
+    #temp = sample_multivariate(time_reshaped, temp, tau_array, sigma_array)#new_approximate_temperature(time_reshaped, temp_curves, gp_times)
     temp = new_approximate_temperature(time_reshaped, temp_curves, gp_times)
     f = new_ionizing_flux_element(dop*temp/(1+z), r_reshaped, dr, dtheta)
     f_def = np.sum(np.sum(f, axis = 2), axis = 1)
-
+    snapshot2_after = tracemalloc.take_snapshot()
     end_time = tempo.perf_counter()
 
     print(end_time-start_time)
 
-
+    stats2 = snapshot2_after.compare_to(snapshot2_before, 'lineno')
     print('Reshape:', end_time-start_time)
     print('Loop:', end_time_loop-start_time_loop)
     print('Ratio:', (end_time-start_time)/(end_time_loop-start_time_loop))
@@ -418,6 +492,12 @@ if __name__ == '__main__':
         #plt.xscale('log')
         #plt.yscale('log')
         plt.legend()
-        plt.savefig('test_cpu/'+name+'.png', dpi = 300, bbox_inches = 'tight')
+        plt.savefig('test_gaussian_cpu/'+name+'.png', dpi = 300, bbox_inches = 'tight')
         plt.show()
 
+    print("==== METODO FOR ====")
+    for stat in stats1[:10]:
+        print(stat)
+    print("==== METODO RESHAPE ====")
+    for stat in stats2[:10]:
+        print(stat)

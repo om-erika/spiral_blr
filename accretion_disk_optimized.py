@@ -1,4 +1,6 @@
-import cupy as np
+import numpy as np
+import cupy as cp
+import cupyx
 import math
 import celerite
 from celerite import terms
@@ -69,6 +71,28 @@ def Temperature(R, M, f_edd, chi, R_in):
     eta = radiative_efficiency_cpu(chi)
     M_dot = f_edd*L_edd_cpu(M)/(eta*c**2)
     return ((3*G*M*M_dot)/(8*np.pi*sigma_B*R**3))**(1/4)*(1-np.sqrt(R_in/R))**(1/4)  
+
+def d_Temperature(R, M, f_edd, chi, R_in):
+    """
+    Compute temperature for a given radius R using the parameters of the accretion disc.
+
+    Args:
+        R (float): Radius at which to compute the temperature.
+        M (float): Mass parameter used in the temperature calculation.
+        f_edd (float): Eddington factor used in the temperature calculation.
+        chi (float): Opacity parameter used in the temperature calculation.
+        R_in (float): Inner radius parameter used in the temperature calculation.
+
+    Returns:
+        float: Computed temperature at radius R.
+    """
+    Z1 = 1 + (1 - chi**2)**(1/3) * ((1 + chi)**(1/3) + (1 - chi)**(1/3))
+    Z2 = cp.sqrt(3 * chi**2 + Z1**2)
+    Eisco = (4 - chi * Z1 - cp.sqrt(3 * Z2 - 2 * Z1)) / (3 * cp.sqrt(3))
+    eta = 1 - Eisco
+    L_edd = 4*cp.pi*G*M*c/0.1
+    M_dot = f_edd*L_edd/(eta*c**2)
+    return ((3*G*M*M_dot)/(8*cp.pi*sigma_B*R**3))**(1/4)*(1-cp.sqrt(R_in/R))**(1/4)  
 
 
 def generate_set_of_temperatures(times, Rs, thetas, M, f_edd, chi, R_in, tau, sigma):
@@ -161,7 +185,7 @@ def new_approximate_temperature(times, starting_light_curve, gp_times):
 
 # Function to calculate the Planck spectrum for a given temperature
 def planck_spectrum(nu, T):
-    return (2 * h * nu**3) / (c**2) * (1 / (np.exp(h * nu / (k * T)) - 1))
+    return (2 * h * nu*nu*nu) / (c*c) * (1 / (np.exp(h * nu / (k * T)) - 1))
 
 # Function to calculate the ionizing flux for a given temperature
 # The temperature here should be D*T/(1+z) where D is the Doppler factor, 1+z is the gravitational redshift and T is the rest frame wavelength 
@@ -198,9 +222,9 @@ def new_ionizing_flux_element(T, R, dr, dtheta, num_points=1000):
 
     # Vectorized Planck spectrum integration
     intensity = planck_spectrum(nu, T)  # shape (T.shape + (num_points,))
-    flux_integrated = np.trapezoid(intensity, dx=dnu, axis=-1)  # integrate over frequency
-
-    return flux_integrated * R * dr * dtheta
+    #flux_integrated = np.trapz(intensity, dx=dnu, axis=-1)  # integrate over frequency
+    flux_integrated = np.sum(intensity, axis = -1)
+    return flux_integrated*dnu*R*dr*dtheta #flux_integrated * R * dr * dtheta*dnu
 
 def accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times):
     #tracemalloc.start()
@@ -335,76 +359,7 @@ def sample_multivariate(times, T_means, taus, sigmas):
     Temperatures = samples.T.reshape(n_times, *shape)
     return Temperatures
 
-if __name__ == '__main__':
-    np.random.seed(42)
-    # Defining constants
-    h = 6.62607015e-34  # Planck's constant (Joule-seconds)
-    c = 3e8  # Speed of light (m/s)
-    k = 1.380649e-23  # Boltzmann constant (Joule/Kelvin)
-    G = 6.67e-11  # Gravitational constant (m^3/kg/s^2)
-    sigma_B = 1.28e-23  # Stefan-Boltzmann constant (W/m^2/K^4)
-    M_sun = np.float64(2e30)  # Solar mass (kg)
-
-    M = np.float64(1e8*M_sun)               # Black hole mass
-    inc = np.radians(30.)                   # Inclination
-    chi = 0.8                               # Spin Parameter
-    R_in = np.float64(1.5*R_ISCO(M, chi))   # R_in
-    f_edd = 0.5                             # f_edd
-    z = 0.1                                 # redshift
-    tau = 100.*86400.                              # DRW tau
-    sigma = 0.5  
-    initial_phase = 0.
-
-    time_dim = 175
-    theta_dim = 175
-    r_dim = 175
-    """ Radii, angles and times definition: change linspace size to speed up computation """
-    r = np.logspace(np.log10(1.1*R_in),np.log10(3.0*R_in), r_dim).astype(np.float64)
-    angle = np.linspace(0., 2.*np.pi, theta_dim).astype(np.float64)
-    times = np.logspace(4., 5., time_dim).astype(np.float64)
-
-    #times for temperature curves: ranges depend on times
-    gp_times = np.logspace(3., 6., 1000).astype(np.float64)
-
-    # dr, dtheta from linspaces
-    dr = r[1]-r[0]
-    dtheta = angle[1]-angle[0]
-
-    """Properties of BLR element: will become 2D matrices with dimensions(2, 175x175)"""
-    r1 = np.array([300.0*R_in,300.0*R_in])
-    v1 = np.array([c/2,c/2]) #fai conto da r_obs
-
-    """ STEP 1. Temperature Curves Generation """
-    start_time = tempo.time()
-    temp_curves = generate_set_of_temperatures(gp_times, r, angle, M, f_edd, chi, R_in, tau, sigma)
-    temp_curves = np.ascontiguousarray(temp_curves)
-    end_time = tempo.time()
-    print(f'Expected shape: ({len(gp_times):.0f}, {len(angle):.0f}, {len(r):.0f})')
-    print('Resulting shape', temp_curves.shape)
-    print('Tempo per generare curve di temperatura:', end_time-start_time)
-
-    """ STEP 1.1 Multivariate Gaussian Sampling - need to change for loop function if used """
-    #tau_array = np.ones((theta_dim, r_dim))
-    #sigma_array = np.ones((theta_dim, r_dim))
-    #temperatures = Temperature(r, M, f_edd, chi, R_in)
-    #temperatures = np.tile(temperatures, (theta_dim, 1))
-    #temperatures = sample_multivariate(times, temperatures, tau_array, sigma_array)
-
-    """ STEP 2 LOOP """
-    start_time_loop = tempo.perf_counter()
-    ang_pre_loop, x_loop, y_loop, vx_loop, vy_loop, gamma_loop, dop_loop, temp_loop, flux_loop = accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times)
-    flux_def_loop = np.sum(np.sum(flux_loop, axis = 2), axis = 1)
-    end_time_loop = tempo.perf_counter()
-
-    """ STEP 3 RESHAPE """
-    #tracemalloc.start()
-    #snapshot2_before = tracemalloc.take_snapshot()
-    r_reshaped = r.reshape(1,1,r_dim)
-    time_reshaped = times.reshape(time_dim, 1, 1)
-    theta_reshaped = angle.reshape(1, theta_dim, 1)
-    
-    start_time = tempo.perf_counter()
-
+def reshaped_accretion_disk(r_reshaped, theta_reshaped, time_dim, theta_dim, temp_curves, gp_times):
     td = r_reshaped*(1+np.sin(inc)*np.cos(theta_reshaped))
     td = np.tile(td, (time_dim, 1, 1))
 
@@ -440,17 +395,420 @@ if __name__ == '__main__':
 
 
     """ change if sampling from multivariate gaussian"""
+    start_time_no_integral_cpu = tempo.perf_counter()
+    temp = Temperature(r, M, f_edd, chi, R_in)
+    temp = np.tile(temp, (theta_dim,1))
+    temp = sample_multivariate(times, temp, tau_array, sigma_array)#new_approximate_temperature(time_reshaped, temp_curves, gp_times)
+    #temp = new_approximate_temperature(time_reshaped, temp_curves, gp_times)
+    end_time_no_integral_cpu = tempo.perf_counter()
+    f = new_ionizing_flux_element(dop*temp/(1+z), r_reshaped, dr, dtheta)
+    f_def = np.sum(np.sum(f, axis = 2), axis = 1)
+
+    return f_def, end_time_no_integral_cpu, start_time_no_integral_cpu
+
+def d_approximate_temperature(times, starting_light_curve, gp_times):
+    """
+    Interpolate a 3D light curve (time, angle, radius) over a new time grid.
+
+    Args:
+        times (array-like): Target times to interpolate to.
+        starting_light_curve (ndarray): Shape (T, A, R), where T = len(gp_times)
+        gp_times (array-like): Time points corresponding to the first axis of starting_light_curve.
+
+    Returns:
+        ndarray: Interpolated light curve values, shape (len(times), A, R)
+    """
+    times = cp.asarray(times, dtype=float).flatten()
+    gp_times = cp.asarray(gp_times, dtype=float).flatten()
+    starting_light_curve = cp.asarray(starting_light_curve, dtype=float)
+
+    # Interpolator over axis=0 (time), returns shape (len(times), angle, radius)
+    #result = interpolator(times)
+    interpolator = cupyx.scipy.interpolate.interp1d(gp_times, starting_light_curve, axis=0, bounds_error=False, fill_value="extrapolate")
+    result = interpolator(times)
+
+    return result
+
+def d_sample_multivariate(times, T_means, taus, sigmas):
+    """
+    Samples a multivariate Gaussian process for each (R, theta) pair.
+
+    Parameters:
+        times (array-like): 1D array of time points.
+        T_means (array-like): 2D array of means, shape (n_R, n_theta).
+        taus (array-like): 2D array of correlation times, shape (n_R, n_theta).
+        sigmas (array-like): 2D array of standard deviations, shape (n_R, n_theta).
+
+    Note:
+        T_means, taus, and sigmas must all have the same shape, corresponding to the number of R and theta values.
+
+    Returns:
+        Temperatures (ndarray): Array of shape (n_times, n_R, n_theta), where each entry contains the sampled temperature
+        at a given time, R, and theta.
+    """
+    #times = cp.asarray(times)
+    #T_means = cp.asarray(T_means)
+    #taus = cp.asarray(taus)
+    #sigmas = cp.asarray(sigmas)
+    shape = taus.shape
+    n_times = len(times)
+    n_rows, n_cols = shape
+
+    # Compute pairwise absolute differences
+    diff = cp.abs(times[:, None] - times[None, :])  # (n_times, n_times)
+    print('Diff shape:', diff.shape)
+    # Expand taus and sigmas for broadcasting
+    gpu_mem()
+    taus_exp = taus[None, :, :]  # (1, n_rows, n_cols)
+    sigmas_exp = sigmas[None, :, :]  # (1, n_rows, n_cols)
+    means_exp = T_means[None, :, :]  # (1, n_rows, n_cols)
+    gpu_mem()
+    Temperatures = cp.zeros((n_times, n_rows, n_cols))
+    # Compute the covariance matrices for all (i, j) pairs
+    # diff: (n_times, n_times)
+    # taus, sigmas: (n_rows, n_cols)
+    # We want K: (n_times, n_times, n_rows, n_cols)
+    #taus_exp = taus[None, None, :, :]  # (1, 1, n_rows, n_cols)
+    #sigmas_exp = sigmas[None, None, :, :]  # (1, 1, n_rows, n_cols)
+    gpu_mem()
+    K = 0.5 * sigmas_exp * cp.exp(-diff[:, :, None, None] / taus_exp)  # (n_times, n_times, n_rows, n_cols)
+    print('K shape:', K.shape)
+    gpu_mem()
+    # Sample all (i, j) at once
+    # For each (i, j), sample a vector of length n_times from N(0, K[:,:,i,j])
+    # Vectorized sampling for all (i, j) pairs
+    # Reshape K to (n_rows * n_cols, n_times, n_times)
+    K_reshaped = K.reshape(n_times, n_times, -1).transpose(2, 0, 1)  # (n_rows*n_cols, n_times, n_times)
+    means_flat = means_exp.reshape(-1)  # (n_rows*n_cols,)
+
+    gpu_mem()
+    # Sample all at once
+    # Vectorized sampling using np.linalg.cholesky and standard normals
+    L = cp.linalg.cholesky(K_reshaped + 1e-10 * cp.eye(n_times)[None, :, :])  # (n_rows*n_cols, n_times, n_times)
+    print('L shape:', L.shape)
+    gpu_mem()
+    z = cp.random.randn(K_reshaped.shape[0], n_times)  # (n_rows*n_cols, n_times)
+    print('z shape:', z.shape)
+    gpu_mem()
+    samples = ( L @ z[..., None]).squeeze(-1)  # (n_rows*n_cols, n_times)
+    print('samples shape:', samples.shape)
+    gpu_mem()
+
+    samples = samples + means_flat[:, None]  # add means
+    Temperatures = samples.T.reshape(n_times, *shape)
+    return Temperatures
+
+def d_planck_spectrum(nu, T):
+    return (2 * h * nu*nu*nu) / (c*c) * (1 / (cp.exp(h * nu / (k * T)) - 1))
+
+def d_new_ionizing_flux_element(T, R, dr, dtheta, num_points=1000):
+    """
+    Fully vectorized calculation of ionizing flux using discrete integration.
+
+    Args:
+        T (ndarray): Temperature array, shape (A, R, Z)
+        R (float or ndarray): Radius scalar or array broadcastable to T
+        dr (float): r[1]-r[0]
+        dtheta (float): angle[1]-angle[0]
+        num_points (int): Number of frequency samples
+
+    Returns:
+        ndarray: Ionizing flux at each T element, same shape as T
+    """
+    #T = np.asarray(T)
+    #shape = T.shape
+    #R = np.broadcast_to(R, shape)
+    flux = cp.zeros(T.shape)
+    print('flux shape:', flux.shape)
+    T = T[..., None]
+    print('T shape:', T.shape)
+    gpu_mem()
+    # Frequency range in Hz
+    nu_min = (13.6 * 1.60218e-19) / h
+    nu_max = 20 * nu_min
+    nu = cp.linspace(nu_min, nu_max, num_points)
+    print('\nnu shape:', nu.shape)
+    dnu = nu[1] - nu[0]
+    gpu_mem()
+    # Vectorized Planck spectrum integration
+    #intensity = d_planck_spectrum(nu, T)  # shape (T.shape + (num_points,))
+    #return (2 * h * nu*nu*nu) / (c*c) * (1 / (cp.exp(h * nu / (k * T)) - 1))
+    #tmp = (2 * h * nu*nu*nu) / (c*c)
+    intensity = cp.divide(h * nu, k * T)
+    cp.exp(intensity, out=intensity)
+    cp.subtract(intensity, 1, out=intensity)
+    #intensity = 1 / (intensity - 1)
+    print('SUB intensity shape:', intensity.shape)
+    gpu_mem()
+    cp.reciprocal(intensity, out=intensity)
+    cp.multiply((2 * h * nu*nu*nu) / (c*c), intensity, out=intensity)
+    print('REC intensity shape:', intensity.shape)
+    gpu_mem()
+    print(type(intensity), intensity.shape)
+    cp.sum(intensity, axis = -1, out=flux) #* dnu
+    return flux *dnu* R *dr * dtheta
+
+def d_reshaped_accretion_disk(r_reshaped, theta_reshaped, time_reshaped, time_dim, theta_dim):
+    td = r_reshaped*(1+cp.sin(inc)*cp.cos(theta_reshaped))
+    td = cp.tile(td, (time_dim, 1, 1))
+    print('td shape:', td.shape)
+    kf = cp.sqrt(G * M / (r_reshaped*r_reshaped*r_reshaped))
+    kf = cp.tile(kf, (time_dim, theta_dim, 1))
+    print('kf shape:', kf.shape)
+    ang_pre = (theta_reshaped - (time_reshaped -td)*kf + initial_phase)
+    ang_pre = ang_pre - (2*cp.pi) * cp.floor((theta_reshaped - (time_reshaped - td)*kf + 0.)/(2*cp.pi))
+    print('ang_pre shape:', ang_pre.shape)
+    v_kep = cp.sqrt(G * M / r_reshaped)
+    v_kep = cp.tile(v_kep, (time_dim, theta_dim, 1))
+    print('v_kep shape:', v_kep.shape)
+    
+    gpu_mem()
+    r2 = cp.array([r_reshaped*cp.sin(ang_pre), r_reshaped*cp.cos(ang_pre)])
+    v2 = cp.array([v_kep*cp.cos(ang_pre), -v_kep*cp.sin(ang_pre)])
+
+    v2_dot_v1 = v2[0]*d_v1[0]+v2[1]*d_v1[1]
+    r2_minus_r1_norm = cp.sqrt((r2[0]-d_r1[0])*(r2[0]-d_r1[0])+(r2[1]-d_r1[1])*(r2[1]-d_r1[1]))
+    v1_reshaped = d_v1.reshape(2,1,1,1)
+    r1_reshaped = d_r1.reshape(2,1,1,1)
+    
+    v2_para = (v2_dot_v1* v1_reshaped) / cp.linalg.norm(d_v1, axis = 0)**2
+    print('v2_para shape:', v2_para.shape)
+    
+    v2_perp = v2 - v2_para  # Perpendicular component of v2
+    print('v2_perp shape:', v2_perp.shape)
+    
+    gamma_2 = 1 / cp.sqrt(1 - cp.linalg.norm(v2, axis = 0)**2 / (c**2))  # Lorentz factor for v2
+    print('gamma_2 shape:', gamma_2.shape)
+    
+    beta = 1 / c * (v1_reshaped - v2 + 1 / gamma_2 * v2_perp) / (1 - v2_dot_v1 / (c*c))
+    print('beta shape:', beta.shape)
+    
+    beta_squared_norm = beta[0]*beta[0]+beta[1]*beta[1]
+    print('beta_squared_norm shape:', beta_squared_norm.shape)
+    
+    r_vers = (r2 - r1_reshaped) / r2_minus_r1_norm # Unit vector in the direction of r2 - r1
+    print('r_vers shape:', r_vers.shape)
+    
+    gamma = cp.sqrt(1 / (1 - beta_squared_norm))
+    print('gamma shape:', gamma.shape)
+    
+    beta_dot_r_vers = beta[0]*r_vers[0] + beta[1]*r_vers[1]
+    print('beta_dot_r_vers shape:', beta_dot_r_vers.shape)
+    
+    dop = 1 / (gamma * (1 - beta_dot_r_vers))     #np.dot(beta, r_vers)))    
+    print('dop shape:', dop.shape)
+    
+    gpu_mem()
+    """ change if sampling from multivariate gaussian"""
+    start_time_no_integral_gpu = tempo.perf_counter()
+    temp = d_Temperature(d_r, M, f_edd, chi, R_in)
+    temp = cp.tile(temp, (theta_dim,1))
+    #print('temp shape:', temp.shape)
+    #gpu_mem()
+    temp = d_sample_multivariate(d_times, temp, d_tau_array, d_sigma_array)#new_approximate_temperature(time_reshaped, temp_curves, gp_times)
+    #temp = d_approximate_temperature(time_reshaped, temp_curves, gp_times)
+    end_time_no_integral_gpu = tempo.perf_counter()
+    print('temp shape:', temp.shape)
+    
+    #d_mem.free_all_blocks()
+    gpu_mem()
+    f = d_new_ionizing_flux_element(dop*temp/(1+z), r_reshaped, dr, dtheta)
+    print('f shape:', f.shape)
+    gpu_mem()
+    f_1 = cp.zeros((time_dim, theta_dim))
+    print('f_1 shape:', f_1.shape)
+    print('sum shape:', cp.sum(f, axis = 2).shape)
+    f_1 = cp.sum(f, axis = 2, out = f_1)
+    f_2 = cp.zeros((time_dim))
+    f_2 = cp.sum(f_1, axis = 1, out = f_2)
+    print('f_def shape:', f_2.shape)
+    
+    return f_2, end_time_no_integral_gpu, start_time_no_integral_gpu
+
+
+def check(cpu_f, gpu_f):
+    gpu_f = cp.asnumpy(gpu_f)
+
+    abs_err = np.abs(cpu_f - gpu_f)
+    rel_err = np.abs(cpu_f - gpu_f)/cpu_f
+
+    print("CPU     mean/min/max ", np.mean(cpu_f), np.min(cpu_f), np.max(cpu_f))
+    print("GPU     mean/min/max ", np.mean(gpu_f), np.min(gpu_f), np.max(gpu_f))
+    print("abs err mean/min/max ", np.mean(abs_err), np.min(abs_err), np.max(abs_err))
+    print("rel err mean/min/max ", np.mean(rel_err), np.min(rel_err), np.max(rel_err))
+
+
+
+if __name__ == '__main__':
+    print(tempo.time())
+    np.random.seed(42)
+    # Defining constants
+    h = 6.62607015e-34  # Planck's constant (Joule-seconds)
+    c = 3e8  # Speed of light (m/s)
+    k = 1.380649e-23  # Boltzmann constant (Joule/Kelvin)
+    G = 6.67e-11  # Gravitational constant (m^3/kg/s^2)
+    sigma_B = 1.28e-23  # Stefan-Boltzmann constant (W/m^2/K^4)
+    M_sun = np.float64(2e30)  # Solar mass (kg)
+
+    M = np.float64(1e8*M_sun)               # Black hole mass
+    inc = np.radians(30.)                   # Inclination
+    chi = 0.8                               # Spin Parameter
+    R_in = np.float64(1.5*R_ISCO(M, chi))   # R_in
+    f_edd = 0.5                             # f_edd
+    z = 0.1                                 # redshift
+    tau = 100.*86400.                              # DRW tau
+    sigma = 0.5  
+    initial_phase = 0.
+
+    time_dim = 20
+    theta_dim = 20
+    r_dim = 20
+    """ Radii, angles and times definition: change linspace size to speed up computation """
+    r = np.logspace(np.log10(1.1*R_in),np.log10(3.0*R_in), r_dim).astype(np.float64)
+    angle = np.linspace(0., 2.*np.pi, theta_dim).astype(np.float64)
+    times = np.logspace(4., 5., time_dim).astype(np.float64)
+    #times for temperature curves: ranges depend on times
+    gp_times = np.logspace(3., 6., 1000).astype(np.float64)
+
+    # dr, dtheta from linspaces
+    dr = r[1]-r[0]
+    dtheta = angle[1]-angle[0]
+
+    """Properties of BLR element: will become 2D matrices with dimensions(2, 175x175)"""
+    r1 = np.array([300.0*R_in,300.0*R_in])
+    v1 = np.array([c/2,c/2]) #fai conto da r_obs
+
+    """ STEP 1. Temperature Curves Generation """
+    start_time = tempo.time()
+    temp_curves = generate_set_of_temperatures(gp_times, r, angle, M, f_edd, chi, R_in, tau, sigma)
+    temp_curves = np.ascontiguousarray(temp_curves)
+    end_time = tempo.time()
+    print(f'Expected shape: ({len(gp_times):.0f}, {len(angle):.0f}, {len(r):.0f})')
+    print('Resulting shape', temp_curves.shape)
+    print('Tempo per generare curve di temperatura:', end_time-start_time)
+
+    """ STEP 1.1 Multivariate Gaussian Sampling - need to change for loop function if used """
+    tau_array = np.ones((theta_dim, r_dim))
+    sigma_array = np.ones((theta_dim, r_dim))
+    #temperatures = Temperature(r, M, f_edd, chi, R_in)
+    #temperatures = np.tile(temperatures, (theta_dim, 1))
+    #temperatures = sample_multivariate(times, temperatures, tau_array, sigma_array)
+
+    """ STEP 3 RESHAPE """
+    #tracemalloc.start()
+    #snapshot2_before = tracemalloc.take_snapshot()
+    r_reshaped = r.reshape(1,1,r_dim)
+    time_reshaped = times.reshape(time_dim, 1, 1)
+    theta_reshaped = angle.reshape(1, theta_dim, 1)
+
+    #cp.cuda.set_allocator(None)
+    #cp.cuda.set_pinned_memory_allocator(None)
+
+    d_mem = cp.get_default_memory_pool()
+
+    def gpu_mem2():
+        dev = cp.cuda.Device(0)
+        mem_free, mem_total = dev.mem_info
+        print("dev mem info ", mem_free/1024/1024, mem_total/1024/1024)
+
+    def gpu_mem():
+        print("[GPUMEM] mem used ", d_mem.used_bytes()/1024/1024)
+        print("[GPUMEM] mem total", d_mem.total_bytes()/1024/1024)
+        gpu_mem2()
+
+    gpu_mem()
+
+    start_time = tempo.perf_counter()
+
+    d_r = cp.asarray(r)
+    d_angle = cp.asarray(angle)
+    d_times = cp.asarray(times)
+    #d_gp_times = cp.asarray(gp_times)
+    d_r1 = cp.asarray(r1)
+    d_v1 = cp.asarray(v1)
+    #d_temp_curves = cp.asarray(temp_curves)
+    d_r_reshaped = cp.asarray(r_reshaped)
+    d_time_reshaped = cp.asarray(time_reshaped)
+    d_theta_reshaped = cp.asarray(theta_reshaped)
+    d_tau_array = cp.asarray(tau_array)
+    d_sigma_array = cp.asarray(sigma_array)
+    end_time = tempo.perf_counter()
+
+    print("GPU init", end_time-start_time)
+
+    gpu_mem()
+
+    """
+    td = r_reshaped*(1+np.sin(inc)*np.cos(theta_reshaped))
+    td = np.tile(td, (time_dim, 1, 1))
+
+    kf = np.sqrt(G * M / (r_reshaped*r_reshaped*r_reshaped))
+    kf = np.tile(kf, (time_dim, theta_dim, 1))
+
+    ang_pre = (theta_reshaped - (time_reshaped -td)*kf + initial_phase)
+    ang_pre = ang_pre - (2*np.pi) * np.floor((theta_reshaped - (time_reshaped - td)*kf + 0.)/(2*np.pi))
+
+    v_kep = np.sqrt(G * M / r_reshaped)
+    v_kep = np.tile(v_kep, (time_dim, theta_dim, 1))
+
+    r2 = np.array([r_reshaped*np.sin(ang_pre), r_reshaped*np.cos(ang_pre)])
+    v2 = np.array([v_kep*np.cos(ang_pre), -v_kep*np.sin(ang_pre)])
+
+    v2_dot_v1 = v2[0]*v1[0]+v2[1]*v1[1]
+    r2_minus_r1_norm = np.sqrt((r2[0]-r1[0])*(r2[0]-r1[0])+(r2[1]-r1[1])*(r2[1]-r1[1]))
+    v1_reshaped = v1.reshape(2,1,1,1)
+    r1_reshaped = r1.reshape(2,1,1,1)
+    
+    v2_para = (v2_dot_v1* v1_reshaped) / np.linalg.norm(v1, axis = 0)**2
+
+    v2_perp = v2 - v2_para  # Perpendicular component of v2
+    gamma_2 = 1 / np.sqrt(1 - np.linalg.norm(v2, axis = 0)**2 / (c**2))  # Lorentz factor for v2
+    beta = 1 / c * (v1_reshaped - v2 + 1 / gamma_2 * v2_perp) / (1 - v2_dot_v1 / (c*c))
+
+    beta_squared_norm = beta[0]*beta[0]+beta[1]*beta[1]
+    r_vers = (r2 - r1_reshaped) / r2_minus_r1_norm # Unit vector in the direction of r2 - r1
+    gamma = np.sqrt(1 / (1 - beta_squared_norm))
+
+    beta_dot_r_vers = beta[0]*r_vers[0] + beta[1]*r_vers[1]
+    dop = 1 / (gamma * (1 - beta_dot_r_vers))     #np.dot(beta, r_vers)))    """
+
+
     #temp = Temperature(r, M, f_edd, chi, R_in)
     #temp = np.tile(temp, (theta_dim,1))
     #temp = sample_multivariate(time_reshaped, temp, tau_array, sigma_array)#new_approximate_temperature(time_reshaped, temp_curves, gp_times)
-    temp = new_approximate_temperature(time_reshaped, temp_curves, gp_times)
+    """temp = new_approximate_temperature(time_reshaped, temp_curves, gp_times)
     end_time_without_integral = tempo.perf_counter()
     f = new_ionizing_flux_element(dop*temp/(1+z), r_reshaped, dr, dtheta)
-    f_def = np.sum(np.sum(f, axis = 2), axis = 1)
+    f_def = np.sum(np.sum(f, axis = 2), axis = 1)"""
     #snapshot2_after = tracemalloc.take_snapshot()
-    end_time = tempo.perf_counter()
 
-    print(end_time-start_time)
+    start_time_gpu = tempo.perf_counter()
+
+    f_def_gpu, end_time_no_integral_gpu, start_time_no_integral_gpu = d_reshaped_accretion_disk(d_r_reshaped, d_theta_reshaped, d_time_reshaped, time_dim, theta_dim)
+    end_time_gpu = tempo.perf_counter()
+    f_def_cpu = cp.asnumpy(f_def_gpu)
+    print(f_def_cpu, np.min(f_def_cpu), np.max(f_def_cpu))
+    
+    print('GPU Reshape:', end_time_gpu-start_time_gpu)
+    print('GPU Reshape (Temperatures):', end_time_no_integral_gpu-start_time_no_integral_gpu)
+    #import sys;sys.exit()
+    
+    start_time_cpu = tempo.perf_counter()
+
+    f_def_cpu, end_time_no_integral_cpu, start_time_no_integral_cpu = reshaped_accretion_disk(r_reshaped, theta_reshaped, time_dim, theta_dim, temp_curves, gp_times)
+    end_time_cpu = tempo.perf_counter()
+
+    print('CPU Reshape:',end_time_cpu-start_time_cpu)
+    print('CPU Reshape (Temperatures):', end_time_no_integral_cpu-start_time_no_integral_cpu)
+    
+    check(f_def_cpu, f_def_gpu)
+    """
+    check(f_def_cpu, f_def_gpu)
+    
+    start_time_loop = tempo.perf_counter()
+    ang_pre_loop, x_loop, y_loop, vx_loop, vy_loop, gamma_loop, dop_loop, temp_loop, flux_loop = accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times)
+    flux_def_loop = np.sum(np.sum(flux_loop, axis = 2), axis = 1)
+    end_time_loop = tempo.perf_counter()
 
     #stats2 = snapshot2_after.compare_to(snapshot2_before, 'lineno')
     print('Reshape:', end_time-start_time)
@@ -502,3 +860,4 @@ if __name__ == '__main__':
     #print("==== METODO RESHAPE ====")
     #for stat in stats2[:10]:
     #    print(stat)
+"""

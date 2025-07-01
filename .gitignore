@@ -8,3 +8,6 @@ test_cpu/
 
 #ignore all .txt files
 *.txt
+
+#ignore env 
+spiral_env/

@@ -1,4 +1,4 @@
-import numpy as np
+import cupy as np
 import math
 import celerite
 from celerite import terms
@@ -6,7 +6,6 @@ import time as tempo
 from scipy.integrate import quad
 from scipy.interpolate import interp1d
 from matplotlib import pyplot as plt
-import tracemalloc
 
 def R_ISCO(M, chi):
     """
@@ -204,8 +203,8 @@ def new_ionizing_flux_element(T, R, dr, dtheta, num_points=1000):
     return flux_integrated * R * dr * dtheta
 
 def accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times):
-    tracemalloc.start()
-    snapshot1_before = tracemalloc.take_snapshot()
+    #tracemalloc.start()
+    #snapshot1_before = tracemalloc.take_snapshot()
     """
     Function to loop on r, angle, times to obtain the flux.
     Used to check if reshape/meshgrid versions are consistent
@@ -274,8 +273,8 @@ def accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times):
                 f = ionizing_flux_element(dop*temp/(1+z), dop, erre,dr,dtheta)
                 flux[idx_time, idx_ang, idx_r] = f
     
-    snapshot1_after = tracemalloc.take_snapshot()
-    return angl, x,y, vx, vy, gamma_loop, D, T, flux,snapshot1_after.compare_to(snapshot1_before, 'lineno')
+    #snapshot1_after = tracemalloc.take_snapshot()
+    return angl, x,y, vx, vy, gamma_loop, D, T, flux #,snapshot1_after.compare_to(snapshot1_before, 'lineno')
 
 def sample_multivariate(times, T_means, taus, sigmas):
     """
@@ -393,13 +392,13 @@ if __name__ == '__main__':
 
     """ STEP 2 LOOP """
     start_time_loop = tempo.perf_counter()
-    ang_pre_loop, x_loop, y_loop, vx_loop, vy_loop, gamma_loop, dop_loop, temp_loop, flux_loop, stats1 = accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times)
+    ang_pre_loop, x_loop, y_loop, vx_loop, vy_loop, gamma_loop, dop_loop, temp_loop, flux_loop = accretion_disk(r, angle, times, r1, v1, temp_curves, gp_times)
     flux_def_loop = np.sum(np.sum(flux_loop, axis = 2), axis = 1)
     end_time_loop = tempo.perf_counter()
 
     """ STEP 3 RESHAPE """
-    tracemalloc.start()
-    snapshot2_before = tracemalloc.take_snapshot()
+    #tracemalloc.start()
+    #snapshot2_before = tracemalloc.take_snapshot()
     r_reshaped = r.reshape(1,1,r_dim)
     time_reshaped = times.reshape(time_dim, 1, 1)
     theta_reshaped = angle.reshape(1, theta_dim, 1)
@@ -445,19 +444,21 @@ if __name__ == '__main__':
     #temp = np.tile(temp, (theta_dim,1))
     #temp = sample_multivariate(time_reshaped, temp, tau_array, sigma_array)#new_approximate_temperature(time_reshaped, temp_curves, gp_times)
     temp = new_approximate_temperature(time_reshaped, temp_curves, gp_times)
+    end_time_without_integral = tempo.perf_counter()
     f = new_ionizing_flux_element(dop*temp/(1+z), r_reshaped, dr, dtheta)
     f_def = np.sum(np.sum(f, axis = 2), axis = 1)
-    snapshot2_after = tracemalloc.take_snapshot()
+    #snapshot2_after = tracemalloc.take_snapshot()
     end_time = tempo.perf_counter()
 
     print(end_time-start_time)
 
-    stats2 = snapshot2_after.compare_to(snapshot2_before, 'lineno')
+    #stats2 = snapshot2_after.compare_to(snapshot2_before, 'lineno')
     print('Reshape:', end_time-start_time)
     print('Loop:', end_time_loop-start_time_loop)
     print('Ratio:', (end_time-start_time)/(end_time_loop-start_time_loop))
-
-
+    print('Without integral:', (end_time_without_integral-start_time))
+    print('Ratio without integral:', (end_time_without_integral-start_time)/(end_time-start_time))
+    
     choice_map = {
         'ang_pre': ang_pre,
         'D': dop,
@@ -495,9 +496,9 @@ if __name__ == '__main__':
         plt.savefig('test_gaussian_cpu/'+name+'.png', dpi = 300, bbox_inches = 'tight')
         plt.show()
 
-    print("==== METODO FOR ====")
-    for stat in stats1[:10]:
-        print(stat)
-    print("==== METODO RESHAPE ====")
-    for stat in stats2[:10]:
-        print(stat)
+    #print("==== METODO FOR ====")
+    #for stat in stats1[:10]:
+    #    print(stat)
+    #print("==== METODO RESHAPE ====")
+    #for stat in stats2[:10]:
+    #    print(stat)
